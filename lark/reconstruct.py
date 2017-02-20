@@ -28,8 +28,13 @@ class Reconstructor:
             def __init__(self, data):
                 self.data = data
 
+            def __repr__(self):
+                return self.data #'MatchData(%r)' % self.data
+
         class MatchTerminal(MatchData):
             def __call__(self, other):
+                if isinstance(other, Tree):
+                    return False
                 return token_res[self.data].match(other) is not None
 
         class MatchTree(MatchData):
@@ -50,8 +55,13 @@ class Reconstructor:
                 for sym in self.expansion:
                     if is_discarded_terminal(sym):
                         t = tokens[sym]
-                        assert isinstance(t, TokenDef__Str)
-                        to_write.append(t.value)
+                        if isinstance(t, TokenDef__Str):
+                            to_write.append(t.value)
+                        else:
+                            if t.name=='_NEWLINE':
+                                to_write.append('\n')
+                            else:
+                                assert False, t
                     else:
                         x = next(args2)
                         if isinstance(x, list):
@@ -89,13 +99,17 @@ class Reconstructor:
                 name = name.lstrip('!').lstrip('?')
 
                 rules.append((name, reduced, WriteTokens(name, expansion).f))
+
         self.rules = rules
 
 
     def _reconstruct(self, tree):
         parser = earley.Parser(ParserConf(self.rules, {}, tree.data))
 
-        res ,= parser.parse(tree.children)  # XXX ambiguity?
+        res = parser.parse(tree.children)  # XXX ambiguity?
+        if len(res)>1:
+            pass    # Handle ambiguity!
+        res = res[0]
         for item in res:
             if isinstance(item, Tree):
                 for x in self._reconstruct(item):
