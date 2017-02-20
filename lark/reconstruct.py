@@ -31,6 +31,14 @@ class Reconstructor:
             def __repr__(self):
                 return self.data #'MatchData(%r)' % self.data
 
+            def __eq__(self, other):
+                try:
+                    return self.data == other.data
+                except AttributeError:
+                    return False
+            def __hash__(self):
+                return hash(self.data)
+
         class MatchTerminal(MatchData):
             def __call__(self, other):
                 if isinstance(other, Tree):
@@ -39,10 +47,7 @@ class Reconstructor:
 
         class MatchTree(MatchData):
             def __call__(self, other):
-                try:
-                    return self.data == other.data
-                except AttributeError:
-                    return False
+                return self == other
 
         class WriteTokens:
             def __init__(self, name, expansion):
@@ -90,6 +95,7 @@ class Reconstructor:
         expand1s = {name.lstrip('!').lstrip('?') for name in d
                     if name.startswith(('?', '!?'))}    # XXX Ugly code
 
+        rule_groups = defaultdict(list)
         for name, expansions in d.items():
             for expansion in expansions:
                 reduced = [sym if sym.startswith('_') or sym in expand1s else
@@ -98,7 +104,16 @@ class Reconstructor:
 
                 name = name.lstrip('!').lstrip('?')
 
-                rules.append((name, reduced, WriteTokens(name, expansion).f))
+                key = (name, tuple(reduced))
+                rule_groups[key].append((expansion, (name, reduced, WriteTokens(name, expansion).f)))
+
+        for group in rule_groups.values():
+            group.sort(key=lambda x: len(x[0]))
+
+        rules = []
+        for _k, group in rule_groups.items():
+            rules.append(group[0][1])
+
 
         self.rules = rules
 
@@ -107,8 +122,7 @@ class Reconstructor:
         parser = earley.Parser(ParserConf(self.rules, {}, tree.data))
 
         res = parser.parse(tree.children)  # XXX ambiguity?
-        if len(res)>1:
-            pass    # Handle ambiguity!
+        res.sort(key=len)
         res = res[0]
         for item in res:
             if isinstance(item, Tree):
