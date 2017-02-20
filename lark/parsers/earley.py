@@ -27,6 +27,12 @@ class Item:
     def __hash__(self):
         return hash((self.rule, self.ptr, self.start))
 
+    def __repr__(self):
+        before = self.rule.expansion[:self.ptr]
+        after = self.rule.expansion[self.ptr:]
+        return '<(%d) %s : %s * %s>' % (self.start, self.rule.origin, ' '.join(before), ' '.join(after))
+
+
 
 class Parser:
     def __init__(self, parser_conf):
@@ -39,14 +45,14 @@ class Parser:
             if rule.origin != '$root':  # XXX kinda ugly
                 a = rule.alias
                 self.postprocess[rule] = a if callable(a) else getattr(parser_conf.callback, a)
-                self.predictions[rule.origin] = [(x.rule, x.index) for x in self.analysis.expand_rule(rule.origin)]
+                self.predictions[rule.origin] = [x.rule for x in self.analysis.expand_rule(rule.origin)]
 
     def parse(self, stream):
         # Define parser functions
 
         def predict(symbol, i):
             assert not is_terminal(symbol), symbol
-            return {Item(rule, index, i, []) for rule, index in self.predictions[symbol]}
+            return {Item(rule, 0, i, []) for rule in self.predictions[symbol]}
 
         def complete(item, table):
             item.data = self.postprocess[item.rule](item.data)
