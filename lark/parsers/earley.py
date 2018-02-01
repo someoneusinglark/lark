@@ -15,28 +15,91 @@
 
 from ..common import ParseError, UnexpectedToken, is_terminal
 from ..tree import Tree, Visitor_NoRecurse, Transformer_NoRecurse
+from ..lexer import Token
+from ..grammar import Rule
 from .grammar_analysis import GrammarAnalyzer
 
+import collections
 
-class Derivation(Tree):
-    _hash = None
+class DerivationList(collections.Container):
+    def __init__(self, tree = None):
+        assert isinstance(tree, DerivationList) or tree is None
+        self.tree = dict(tree.tree) if tree is not None else {}
 
-    def __init__(self, rule, items=None):
-        Tree.__init__(self, 'drv', items or [])
-        self.rule = rule
+    def __contains__(self, key):
+        assert(len(key) == 2)
+        assert(isinstance(key[0], int) and isinstance(key[1], int))
+        if key in self.tree:
+            return True
+        return False
 
-    def _pretty_label(self):    # Nicer pretty for debugging the parser
-        return self.rule.origin if self.rule else self.data
+    def __len__(self):
+        return len(self.tree)
+
+    def __setitem__(self, key, value):
+        if isinstance(key, tuple):
+            assert(len(key) == 3)
+            assert(isinstance(key[0], int) and isinstance(key[1], int) and isinstance(key[2], int))
+            if key in self.tree:
+                current = self.tree[key]
+                if isinstance(current, Tree) and current.data == '_ambig' and value not in current.children:
+                    current.children.append(value)
+                    return
+                elif current != value:
+                    ambiguous = Tree('_ambig', [current, value])
+                    self.tree[key] = ambiguous
+                    return
+            else:
+                self.tree[key] = value
+        else:
+            raise KeyError('invalid key {}'.format(key))
+
+    def __getitem__(self, key):
+        if isinstance(key, int):
+            i = 0
+            for value in iter(self):
+                if i == key:
+                    return value
+                i = i + 1
+
+        elif isinstance(key, tuple):
+            assert(len(key) == 3)
+            assert(isinstance(key[0], int) and isinstance(key[1], int) and isinstance(key[2], int))
+            return self.tree[key]
+        else:
+            raise KeyError('invalid key {}'.format(key))
+
+    def __iter__(self):
+        for i in sorted(self.tree):
+            yield self.tree[i]
 
     def __hash__(self):
-        if self._hash is None:
-            self._hash = Tree.__hash__(self)
-        return self._hash
+        return hash(tuple(self.tree))
+
+#    def __repr__(self):
+#        printer = pprint.PrettyPrinter(indent=4, width=80, depth=3)
+#        return "{}".format(printer.pformat(self.tree))
+
+class Derivation(Tree):
+    def __init__(self, rule, children=None):
+        assert isinstance(rule, Rule)
+        Tree.__init__(self, 'drv', DerivationList(children) if children is not None else DerivationList())
+        self.rule = rule
+
+    def add(self, start_idx, end_idx, ptr, value):
+        self.children[start_idx, end_idx, ptr] = value
+
+    def __repr__(self):
+        return 'Derivation(%s, %s, %s)' % (self.rule, self.data, self.children)
+
+    def __hash__(self):
+        return hash((self.data, tuple(self.children)))
 
 class Item(object):
     "An Earley Item, the atom of the algorithm."
 
-    def __init__(self, rule, ptr, start, tree):
+    def __init__(self, rule, ptr, start, tree = None):
+        assert isinstance(rule, Rule)
         self.rule = rule
         self.ptr = ptr
         self.start = start
@@ -50,9 +113,12 @@ class Item(object):
     def is_complete(self):
         return self.ptr == len(self.rule.expansion)
 
-    def advance(self, tree):
+    def add_derivation(self, start_idx, end_idx, item):
+        self.tree.add(start_idx, end_idx, self.ptr, item)
+
+    def advance(self):
         assert self.tree.data == 'drv'
-        new_tree = Derivation(self.rule, self.tree.children + [tree])
+        new_tree = Derivation(self.rule, self.tree.children)
         return self.__class__(self.rule, self.ptr+1, self.start, new_tree)
 
     def __eq__(self, other):
@@ -64,83 +130,39 @@ class Item(object):
     def __repr__(self):
         before = list(map(str, self.rule.expansion[:self.ptr]))
         after = list(map(str, self.rule.expansion[self.ptr:]))
-        return '<(%d) %s : %s * %s>' % (id(self.start), self.rule.origin, ' '.join(before), ' '.join(after))
-
-class NewsList(list):
-    "Keeps track of newly added items (append-only)"
-
-    def __init__(self, initial=None):
-        list.__init__(self, initial or [])
-        self.last_iter = 0
-
-    def get_news(self):
-        i = self.last_iter
-        self.last_iter = len(self)
-        return self[i:]
-
-
+        return '<(%d) (%d) %s : %s * %s>' % (id(self), id(self.start), self.rule.origin, ' '.join(before), ' '.join(after))
 
 class Column:
     "An entry in the table, aka Earley Chart. Contains lists of items."
     def __init__(self, i, FIRST, predict_all=False):
         self.i = i
-        self.to_reduce = NewsList()
-        self.to_predict = NewsList()
-        self.to_scan = []
+
+        ### Need to preserve insertion order for determism of the SPPF tree.
+        self.to_reduce = collections.OrderedDict()
+        self.to_predict = collections.OrderedDict()
+        self.to_scan = collections.OrderedDict()
         self.item_count = 0
         self.FIRST = FIRST
 
-        self.predicted = set()
-        self.completed = {}
         self.predict_all = predict_all
 
-    def add(self, items):
+    def add(self, item):
         """Sort items into scan/predict/reduce newslists
 
         Makes sure only unique items are added.
         """
-        for item in items:
-
-            item_key = item, item.tree  # Elsewhere, tree is not part of the comparison
-            if item.is_complete:
-                # XXX Potential bug: What happens if there's ambiguity in an empty rule?
-                if item.rule.expansion and item_key in self.completed:
-                    old_tree = self.completed[item_key].tree
-                    if old_tree == item.tree:
-                        is_empty = not self.FIRST[item.rule.origin]
-                        if not is_empty:
-                            continue
-
-                    if old_tree.data != '_ambig':
-                        new_tree = old_tree.copy()
-                        new_tree.rule = old_tree.rule
-                        old_tree.set('_ambig', [new_tree])
-                        old_tree.rule = None    # No longer a 'drv' node
-
-                    if item.tree.children[0] is old_tree:   # XXX a little hacky!
-                        raise ParseError("Infinite recursion in grammar! (Rule %s)" % item.rule)
-
-                    if item.tree not in old_tree.children:
-                        old_tree.children.append(item.tree)
-                    # old_tree.children.append(item.tree)
-                else:
-                    self.completed[item_key] = item
-                self.to_reduce.append(item)
+        if item.is_complete:
+            item_hash = hash((item))
+            return self.to_reduce.setdefault(item_hash, item)
+        else:
+            item_hash = hash((item))
+            if is_terminal(item.expect):
+                return self.to_scan.setdefault(item_hash, item)
             else:
-                if is_terminal(item.expect):
-                    self.to_scan.append(item)
-                else:
-                    k = item_key if self.predict_all else item
-                    if k in self.predicted:
-                        continue
-                    self.predicted.add(k)
-                    self.to_predict.append(item)
-
-            self.item_count += 1    # Only count if actually added
-
+                return self.to_predict.setdefault(item_hash, item)
 
     def __bool__(self):
-        return bool(self.item_count)
+        return bool(self.to_reduce or self.to_scan or self.to_predict)
     __nonzero__ = __bool__  # Py2 backwards-compatibility
 
 class Parser:
@@ -168,42 +190,71 @@ class Parser:
 
         def predict(nonterm, column):
             assert not is_terminal(nonterm), nonterm
-            return [_Item(rule, 0, column, None) for rule in self.predictions[nonterm]]
+            for rule in self.predictions[nonterm]:
+                new_item = column.add(_Item(rule, 0, column))
+                column.add(new_item)
 
-        def complete(item):
+        def complete(item, column):
             name = item.rule.origin
-            return [i.advance(item.tree) for i in item.start.to_predict if i.expect == name]
+            is_empty_rule = not self.FIRST[item.rule.origin]
+            is_empty_item = item.start.i == column.i
+
+            for key in list(item.start.to_predict.keys()):
+                if item.start.to_predict[key].expect == name:
+                    new_item = item.start.to_predict[key].advance()
+                    if new_item == item:
+                        raise ParseError('Infinite recursion detected! (rule %s)' % item.rule)
+
+                    new_item = column.add(new_item)
+                    new_item.add_derivation(item.start.i, column.i, item.tree)
+
+                    ### Better would be: if not item.can_match_more del item.start.to_predict[key]
+                    if is_empty_rule:
+                        del item.start.to_predict[key]
+
+            ### Posibbly better - if not item.rule.origin == start_symbol, del column.to_reduce[hash(item)]?
+            if is_empty_rule:
+                del column.to_reduce[hash(item)]
 
         def predict_and_complete(column):
+            previous_to_predict = set([])
+            previous_to_reduce = set([])
             while True:
-                to_predict = {x.expect for x in column.to_predict.get_news()
-                              if x.ptr}  # if not part of an already predicted batch
-                to_reduce = set(column.to_reduce.get_news())
+                to_reduce = collections.OrderedDict(column.to_reduce)
+                list(map(to_reduce.__delitem__, filter(to_reduce.__contains__, previous_to_reduce)))
+                previous_to_reduce = set(column.to_reduce.keys())
+                completed = to_reduce.values()
+
+                to_predict = collections.OrderedDict(column.to_predict)
+                list(map(to_predict.__delitem__, filter(to_predict.__contains__, previous_to_predict)))
+                previous_to_predict = set(column.to_predict.keys())
+                nonterms = [ nonterm.expect for nonterm in to_predict.values() if nonterm.ptr ]
+    
                 if not (to_predict or to_reduce):
                     break
 
-                for nonterm in to_predict:
-                    column.add( predict(nonterm, column) )
+                for nonterm in nonterms:
+                    predict(nonterm, column)
 
-                for item in to_reduce:
-                    new_items = list(complete(item))
-                    if item in new_items:
-                        raise ParseError('Infinite recursion detected! (rule %s)' % item.rule)
-                    column.add(new_items)
+                for item in completed:
+                    complete(item, column)
 
         def scan(i, token, column):
-            next_set = Column(i, self.FIRST)
-            next_set.add(item.advance(token) for item in column.to_scan if match(item.expect, token))
+            next_set = Column(i+1, self.FIRST)
+            for item in column.to_scan.values():
+                if match(item.expect, token):
+                    new_item = next_set.add(item.advance())
+                    new_item.add_derivation(column.i, next_set.i, token)
 
             if not next_set:
-                expect = {i.expect for i in column.to_scan}
+                expect = {i.expect for i in column.to_scan.values()}
                 raise UnexpectedToken(token, expect, stream, i)
 
             return next_set
 
         # Main loop starts
         column0 = Column(0, self.FIRST)
-        column0.add(predict(start_symbol, column0))
+        predict(start_symbol, column0)
 
         column = column0
         for i, token in enumerate(stream):
@@ -213,9 +264,8 @@ class Parser:
         predict_and_complete(column)
 
         # Parse ended. Now build a parse tree
-        solutions = [n.tree for n in column.to_reduce
+        solutions = [n.tree for n in column.to_reduce.values()
                      if n.rule.origin==start_symbol and n.start is column0]
-
         if not solutions:
             raise ParseError('Incomplete parse: Could not find a solution to input')
         elif len(solutions) == 1:
@@ -239,4 +289,4 @@ class ApplyCallbacks(Transformer_NoRecurse):
         if callback:
             return callback(children)
         else:
-            return Tree(rule.origin, children)
+            return Tree(tree.rule, children)
