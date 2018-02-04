@@ -68,52 +68,48 @@ class Parser:
                     if new_item == item:
                         raise ParseError('Infinite recursion detected! (rule %s)' % item.rule)
 
-                    new_item = column.add(new_item)
+                    column.add(new_item)
                     new_item.add_derivation(item.start.i, column.i, item.tree)
                     if is_empty_rule:
                         del item.start.to_predict[key]
 
-            # Special case for empty rules; which will always match. 
+            # Special case for empty rules; which will always match.
             # Ensure we continue to advance any items that depend on them.
             if is_empty_rule:
-                del column.to_reduce[hash(item)]
+                del column.to_reduce[item]
 
         def predict_and_complete(column):
-            i = 0
-            previous_to_predict = set([])
-            previous_to_reduce = set([])
+            previous_to_predict = []
+            previous_to_reduce = []
             while True:
-                to_reduce = collections.OrderedDict(column.to_reduce)
-                list(map(to_reduce.__delitem__, filter(to_reduce.__contains__, previous_to_reduce)))
+                to_reduce = [i for i in column.to_reduce if i not in previous_to_reduce]
                 previous_to_reduce = set(column.to_reduce.keys())
-                completed = to_reduce.values()
 
-                to_predict = collections.OrderedDict(column.to_predict)
-                list(map(to_predict.__delitem__, filter(to_predict.__contains__, previous_to_predict)))
+                to_predict = [i for i in column.to_predict if i not in previous_to_predict]
                 previous_to_predict = set(column.to_predict.keys())
-                nonterms = [ nonterm.expect for nonterm in to_predict.values() if nonterm.ptr ]
 
                 if not (to_predict or to_reduce):
                     break
 
-                for nonterm in nonterms:
-                    predict(nonterm, column)
-                for item in completed:
+                for nonterm in to_predict:
+                    if nonterm.ptr:
+                        predict(nonterm.expect, column)
+
+                for item in to_reduce:
                     complete(item, column)
-                i = i + 1
 
         def scan(i, token, column):
-            to_scan = column.to_scan.values()
+            to_scan = set(column.to_scan)
             for x in self.ignore:
                 m = match(x, stream, i)
                 if m:
                     # Carry over any items currently in the scan buffer, to past
                     # the end of the ignored items.
-                    delayed_matches[m.end()].extend([(item, None) for item in set(to_scan)])
+                    delayed_matches[m.end()] += [(item, None) for item in to_scan]
 
-                    # If we're ignoring up to the end of the file, 
+                    # If we're ignoring up to the end of the file,
                     # carry over the start symbol if it already completed.
-                    delayed_matches[m.end()].extend([(item, None) for item in set(column.to_reduce.values()) if item.rule.origin == start_symbol])
+                    delayed_matches[m.end()] += [(item, None) for item in column.to_reduce if item.rule.origin == start_symbol]
 
                     # TODO add partial matches for ignore too?
                     # s = m.group(0)
@@ -128,20 +124,20 @@ class Parser:
                     t = Token(item.expect, m.group(0), i, text_line, text_column)
                     delayed_matches[m.end()].append((item.advance(), t))
 
-#                    s = m.group(0)
-#                    for j in range(1, len(s)):
-#                        m = match(item.expect, s[:-j])
-#                        if m:
-#                            t = Token(item.expect, m.group(0), i, text_line, text_column)
-#                            delayed_matches[i+m.end()].append((item.advance(), t))
+                    s = m.group(0)
+                    for j in range(1, len(s)):
+                        m = match(item.expect, s[:-j])
+                        if m:
+                            t = Token(item.expect, m.group(0), i, text_line, text_column)
+                            delayed_matches[i+m.end()].append((item.advance(), t))
 #
 
             next_set = Column(i+1, self.FIRST, predict_all=self.predict_all)
             for item, t in delayed_matches[i+1]:
                 assert isinstance(item, Item)
-                new_item = next_set.add(item) 
+                next_set.add(item)
                 if t is not None:
-                    new_item.add_derivation(t.column, next_set.i, t)
+                    item.add_derivation(t.column, next_set.i, t)
             del delayed_matches[i+1]    # No longer needed, so unburden memory
 
             if not next_set and not delayed_matches:

@@ -152,14 +152,12 @@ class Column:
         Makes sure only unique items are added.
         """
         if item.is_complete:
-            item_hash = hash((item))
-            return self.to_reduce.setdefault(item_hash, item)
+            self.to_reduce[item] = item
         else:
-            item_hash = hash((item))
             if is_terminal(item.expect):
-                return self.to_scan.setdefault(item_hash, item)
+                self.to_scan[item] = item
             else:
-                return self.to_predict.setdefault(item_hash, item)
+                self.to_predict[item] = item
 
     def __bool__(self):
         return bool(self.to_reduce or self.to_scan or self.to_predict)
@@ -191,59 +189,56 @@ class Parser:
         def predict(nonterm, column):
             assert not is_terminal(nonterm), nonterm
             for rule in self.predictions[nonterm]:
-                new_item = column.add(_Item(rule, 0, column))
-                column.add(new_item)
+                column.add(_Item(rule, 0, column))
 
         def complete(item, column):
             name = item.rule.origin
             is_empty_rule = not self.FIRST[item.rule.origin]
             is_empty_item = item.start.i == column.i
 
-            for key in list(item.start.to_predict.keys()):
-                if item.start.to_predict[key].expect == name:
-                    new_item = item.start.to_predict[key].advance()
+            for predicted_item in list(item.start.to_predict):
+                if predicted_item.expect == name:
+                    new_item = predicted_item.advance()
                     if new_item == item:
                         raise ParseError('Infinite recursion detected! (rule %s)' % item.rule)
 
-                    new_item = column.add(new_item)
+                    column.add(new_item)
                     new_item.add_derivation(item.start.i, column.i, item.tree)
 
                     ### Better would be: if not item.can_match_more del item.start.to_predict[key]
                     if is_empty_rule:
-                        del item.start.to_predict[key]
+                        del item.start.to_predict[predicted_item]
 
             ### Posibbly better - if not item.rule.origin == start_symbol, del column.to_reduce[hash(item)]?
             if is_empty_rule:
-                del column.to_reduce[hash(item)]
+                del column.to_reduce[item]
 
         def predict_and_complete(column):
-            previous_to_predict = set([])
-            previous_to_reduce = set([])
+            previous_to_predict = []
+            previous_to_reduce = []
             while True:
-                to_reduce = collections.OrderedDict(column.to_reduce)
-                list(map(to_reduce.__delitem__, filter(to_reduce.__contains__, previous_to_reduce)))
+                to_reduce = [i for i in column.to_reduce if i not in previous_to_reduce]
                 previous_to_reduce = set(column.to_reduce.keys())
-                completed = to_reduce.values()
 
-                to_predict = collections.OrderedDict(column.to_predict)
-                list(map(to_predict.__delitem__, filter(to_predict.__contains__, previous_to_predict)))
+                to_predict = [i for i in column.to_predict if i not in previous_to_predict]
                 previous_to_predict = set(column.to_predict.keys())
-                nonterms = [ nonterm.expect for nonterm in to_predict.values() if nonterm.ptr ]
-    
+
                 if not (to_predict or to_reduce):
                     break
 
-                for nonterm in nonterms:
-                    predict(nonterm, column)
+                for nonterm in to_predict:
+                    if nonterm.ptr:
+                        predict(nonterm.expect, column)
 
-                for item in completed:
+                for item in to_reduce:
                     complete(item, column)
 
         def scan(i, token, column):
             next_set = Column(i+1, self.FIRST)
             for item in column.to_scan.values():
                 if match(item.expect, token):
-                    new_item = next_set.add(item.advance())
+                    new_item = item.advance()
+                    next_set.add(new_item)
                     new_item.add_derivation(column.i, next_set.i, token)
 
             if not next_set:

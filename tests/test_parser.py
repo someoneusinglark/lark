@@ -197,7 +197,7 @@ def _make_full_earley_test(LEXER):
 
             l = Lark(grammar, parser='earley', lexer=LEXER)
             res = l.parse("aaa")
-            self.assertEqual(res.children, ['a', 'aa'])
+            self.assertEqual(res.children, ['aa', 'a'])
 
         def test_earley_scanless4(self):
             grammar = """
