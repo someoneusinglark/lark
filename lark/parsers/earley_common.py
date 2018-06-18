@@ -37,7 +37,7 @@ class Item(object):
         self.rule = rule    # rule
         self.ptr = ptr      # ptr
         self.start = start  # j
-        self.node = node    # w
+        self.node = None    # w
         if self.is_complete:
             self.s = rule.origin
             self.expect = None

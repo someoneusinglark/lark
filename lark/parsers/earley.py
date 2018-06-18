@@ -16,7 +16,7 @@ from ..common import ParseError, UnexpectedToken, is_terminal
 from ..tree import Transformer_NoRecurse
 from .grammar_analysis import GrammarAnalyzer
 from .earley_common import Column, Item
-from .earley_forest import ForestToTreeVisitor, ForestSumVisitor, SymbolNode, TokenNode, PackedNode
+from .earley_forest import ForestToTreeVisitor, ForestSumVisitor, SymbolNode, TokenNode
 
 import collections
 
@@ -42,29 +42,20 @@ class Parser:
     def parse(self, stream, start_symbol=None):
         # Define parser functions
         start_symbol = start_symbol or self.parser_conf.start
-        match = self.term_matcher
-        held_completions = collections.defaultdict(list)
         node_cache = {}
         token_cache = {}
 
         def make_symbol_node(s, start, end):
             label = (s, start.i, end.i)
-            if label in node_cache:
-                node = node_cache[label]
-            else:
-                node = node_cache[label] = SymbolNode(s, start, end)
-            return node
-
-        def make_packed_node(lr0, rule, start, left, right):
-            return PackedNode(lr0, rule, start, left, right)
+            if label not in node_cache:
+                node_cache[label] = SymbolNode(s, start, end)
+            return node_cache[label]
 
         def make_token_node(token, start, end):
             label = (token, start.i, end.i)
-            if label in token_cache:
-                node = token_cache[label]
-            else:
-                node = token_cache[label] = TokenNode(token, start, end)
-            return node
+            if label not in token_cache:
+                token_cache[label] = TokenNode(token, start, end)
+            return token_cache[label]
 
         def predict_and_complete(column, to_scan):
             """The core Earley Predictor and Completer.
@@ -74,7 +65,7 @@ class Parser:
             come next in the input stream. The completions and any predicted
             non-terminals are recursively processed until we reach a set of,
             which can be added to the scan list for the next scanner cycle."""
-            held_completions.clear()
+            held_completions = collections.defaultdict(list)
 
             # R (items) = Ei (column.items)
             items = list(column.items)
@@ -86,7 +77,7 @@ class Parser:
 
                     if item.node is None:
                         item.node = make_symbol_node(item.s, item.start, column)
-                        item.node.add_family(make_packed_node(item.s, item.rule, item.start, None, None))
+                        item.node.add_packed_node(item.s, item.rule, item.start, None, None)
 
                     # Empty has 0 length. If we complete an empty symbol in a particular
                     # parse step, we need to be able to use that same empty symbol to complete
@@ -101,7 +92,7 @@ class Parser:
                     for originator in originators:
                         new_item = originator.advance()
                         new_item.node = make_symbol_node(new_item.s, originator.start, column)
-                        new_item.node.add_family(make_packed_node(new_item.s, new_item.rule, new_item.start, originator.node, item.node))
+                        new_item.node.add_packed_node(new_item.s, new_item.rule, new_item.start, originator.node, item.node)
                         if new_item.is_terminal:
                             # Add (B :: aC.B, h, y) to Q
                             to_scan.add(new_item)
@@ -121,7 +112,7 @@ class Parser:
                     if item.expect in held_completions:
                         new_item = item.advance()
                         new_item.node = make_symbol_node(new_item.s, item.start, column)
-                        new_item.node.add_family(make_packed_node(new_item.s, new_item.rule, new_item.start, item.node, held_completions[item.expect]))
+                        new_item.node.add_packed_node(new_item.s, new_item.rule, new_item.start, item.node, held_completions[item.expect])
                         new_items.append(new_item)
 
                     for new_item in new_items:
@@ -142,11 +133,11 @@ class Parser:
             next_set = Column(i+1, self.FIRST)
             next_to_scan = set()
             for item in set(to_scan):
-                if match(item.expect, token):
+                if self.term_matcher(item.expect, token):
                     token_node = make_token_node(token, item.start, next_set)
                     new_item = item.advance()
                     new_item.node = make_symbol_node(new_item.s, new_item.start, column)
-                    new_item.node.add_family(make_packed_node(new_item.s, item.rule, new_item.start, item.node, token_node))
+                    new_item.node.add_packed_node(new_item.s, item.rule, new_item.start, item.node, token_node)
 
                     if new_item.is_terminal:
                         # add (B ::= Aai+1.B, h, y) to Q'

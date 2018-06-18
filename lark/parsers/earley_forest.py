@@ -31,52 +31,37 @@ class SymbolNode(object):
     __slots__ = ('s', 'start', 'end', 'children', 'priority')
     def __init__(self, s, start, end):
         self.s = s
-        self.start = start
-        self.end = end
 
-        self.children = set()
+        self.children = list()
         self.priority = None
 
-    def add_family(self, packed_node):
-        packed_node.parent = self
-        self.children.add(packed_node)
+    def add_packed_node(self, s, rule, start, left, right):
+        packed_node = PackedNode(self, s, rule, start, [left, right])
+        self.children.append(packed_node)
 
     @property
     def is_ambiguous(self):
         return len(self.children) > 1
-
-    def __eq__(self, other):
-        if not isinstance(other, SymbolNode):
-            return False
-        return self is other or (self.s == other.s and self.start == other.start and self.end is other.end)
-
-    def __hash__(self):
-        return hash((self.s, self.start.i, self.end.i))
-
-    def __repr__(self):
-        symbol = self.s if isinstance(self.s, basestring) else self.s[0].origin
-        return "(%s, %d, %d, %d)" % (symbol, self.start.i, self.end.i, self.priority if self.priority is not None else 0)
 
 @functools.total_ordering
 class PackedNode(object):
     """
     A Packed Node represents a single derivation in a symbol node.
     """
-    __slots__ = ('parent', 's', 'rule', 'start', 'left', 'right', 'priority')
-    def __init__(self, s, rule, start, left, right):
-        self.parent = None
+    __slots__ = ('parent', 's', 'rule', 'start', 'children', 'priority')
+    def __init__(self, parent, s, rule, start, children):
+        self.parent = parent
         self.s = s
         self.start = start
 
         self.rule = rule
 
-        self.left = left
-        self.right = right
+        self.children = children
         self.priority = None
 
     @property
     def is_empty(self):
-        return self.left is None and self.right is None
+        return self.children == [None, None]
 
     def __lt__(self, other):
         if self.is_empty and not other.is_empty:
@@ -90,14 +75,14 @@ class PackedNode(object):
     def __eq__(self, other):
         if not isinstance(other, PackedNode):
             return False
-        return self is other or (self.s == other.s and self.start == other.start and self.left == other.left and self.right == other.right)
+        return self is other or (self.s == other.s and self.start == other.start and self.children == other.children)
 
     def __hash__(self):
-        return hash((hash(self.s), self.start.i, hash(self.left), hash(self.right)))
+        return hash((self.s, self.start.i, tuple(self.children)))
 
     def __repr__(self):
         symbol = self.s if isinstance(self.s, basestring) else self.s[0].origin
-        return "{%s, %d, %s, %s, %s}" % (symbol, self.start.i, self.left, self.right, self.priority if self.priority is not None else 0)
+        return "{%s, %d, %s, %s}" % (symbol, self.start.i, self.children, self.priority if self.priority is not None else 0)
 
 
 class TokenNode(object):
@@ -107,20 +92,9 @@ class TokenNode(object):
     Consider whether we need this long term; of whether we can simply add
     lark Tokens directly to the SPPF tree for performance.
     """
-    __slots__ = ('token', 'start', 'end', 'priority')
     def __init__(self, token, start, end):
         self.token = token
-        self.start = start
-        self.end = end
         self.priority = 0
-
-    def __eq__(self, other):
-        if not isinstance(other, TokenNode):
-            return False
-        return self is other or (self.token == other.token and self.start == other.start and self.end == other.end)
-
-    def __hash__(self):
-        return hash((self.token, self.start.i, self.end.i))
 
     def __repr__(self):
         return "(%s, %s, %s)" % (self.token, self.start.i, self.end.i)
@@ -205,7 +179,7 @@ class ForestSumVisitor(ForestVisitor):
     uses these properties (and other factors) to sort the ambiguous packed nodes.
     """
     def visit_packed_node_in(self, node):
-        return iter([node.left, node.right])
+        return iter(node.children)
 
     def visit_symbol_node_in(self, node):
         return iter(node.children)
@@ -213,8 +187,9 @@ class ForestSumVisitor(ForestVisitor):
     def visit_packed_node_out(self, node):
         node.priority = 0
         if node.rule.options and node.rule.options.priority:   node.priority += node.rule.options.priority
-        if node.right is not None:                             node.priority += node.right.priority
-        if node.left is not None:                              node.priority += node.left.priority
+        for child in node.children:
+            if child is not None:
+                node.priority += child.priority
 
     def visit_symbol_node_out(self, node):
         node.priority = max(child.priority for child in node.children)
@@ -280,7 +255,7 @@ class ForestToTreeVisitor(ForestVisitor):
             if self.output_stack:
                 self.output_stack[-1].children.append(drv)
             self.output_stack.append(drv)
-        return iter([node.left, node.right])
+        return iter(node.children)
 
     def visit_packed_node_out(self, node):
         if not isinstance(node.parent.s, tuple):
@@ -344,7 +319,7 @@ class ForestToAmbiguousTreeVisitor(ForestVisitor):
             if self.output_stack:
                 self.output_stack[-1].children.append(drv)
             self.output_stack.append(drv)
-        return iter([node.left, node.right])
+        return iter(node.children)
 
     def visit_packed_node_out(self, node):
         if not isinstance(node.parent.s, tuple):

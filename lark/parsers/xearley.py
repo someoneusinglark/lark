@@ -25,7 +25,7 @@ from ..tree import Tree
 from .grammar_analysis import GrammarAnalyzer
 from .earley import ApplyCallbacks
 from .earley_common import Column, Item
-from .earley_forest import ForestToTreeVisitor, ForestSumVisitor, SymbolNode, TokenNode, PackedNode
+from .earley_forest import ForestToTreeVisitor, ForestSumVisitor, SymbolNode, TokenNode
 
 class Parser:
     def __init__(self,  parser_conf, term_matcher, resolve_ambiguity=True, forest_sum_visitor = ForestSumVisitor, ignore=()):
@@ -70,9 +70,6 @@ class Parser:
                 node = node_cache[label] = SymbolNode(s, start, end)
             return node
 
-        def make_packed_node(lr0, rule, start, left, right):
-            return PackedNode(lr0, rule, start, left, right)
-
         def make_token_node(token, start, end):
             label = (token, start.i, end.i)
             if label in token_cache:
@@ -101,7 +98,7 @@ class Parser:
 
                     if item.node is None:
                         item.node = make_symbol_node(item.s, item.start, column)
-                        item.node.add_family(make_packed_node(item.s, item.rule, item.start, None, None))
+                        item.node.add_packed_node(item.s, item.rule, item.start, None, None)
 
                     # Empty has 0 length. If we complete an empty symbol in a particular
                     # parse step, we need to be able to use that same empty symbol to complete
@@ -116,7 +113,7 @@ class Parser:
                     for originator in originators:
                         new_item = originator.advance()
                         new_item.node = make_symbol_node(new_item.s, originator.start, column)
-                        new_item.node.add_family(make_packed_node(new_item.s, new_item.rule, new_item.start, originator.node, item.node))
+                        new_item.node.add_packed_node(new_item.s, new_item.rule, new_item.start, originator.node, item.node)
                         if new_item.is_terminal:
                             # Add (B :: aC.B, h, y) to Q
                             to_scan.add(new_item)
@@ -136,7 +133,7 @@ class Parser:
                     if item.expect in held_completions:
                         new_item = item.advance()
                         new_item.node = make_symbol_node(new_item.s, item.start, column)
-                        new_item.node.add_family(make_packed_node(new_item.s, new_item.rule, new_item.start, item.node, held_completions[item.expect]))
+                        new_item.node.add_packed_node(new_item.s, new_item.rule, new_item.start, item.node, held_completions[item.expect])
                         new_items.append(new_item)
 
                     for new_item in new_items:
@@ -211,7 +208,7 @@ class Parser:
                     new_item = item.advance()
                     new_item.node = make_symbol_node(new_item.s, new_item.start, column)
                     token_node = make_token_node(token, start, next_set)
-                    new_item.node.add_family(make_packed_node(new_item.s, item.rule, new_item.start, item.node, token_node))
+                    new_item.node.add_packed_node(new_item.s, item.rule, new_item.start, item.node, token_node)
                 else:
                     new_item = item
 
