@@ -64,7 +64,7 @@ class Tree(object):
 
     def find_pred(self, pred):
         "Find all nodes where pred(tree) == True"
-        return filter(pred, self.iter_subtrees())
+        return list(filter(pred, self.iter_subtrees()))
 
     def find_data(self, data):
         "Find all nodes where tree.data == data"
